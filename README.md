@@ -111,5 +111,5 @@ python3 generate_dashboard.py
 
 
 ## Images : 
-![](img/img1)
-![](img/img2)
+![](img/img1.png)
+![](img/img2.png)
