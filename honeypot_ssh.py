@@ -11,15 +11,9 @@ from sql_config import DB_CONFIG
 host_key = paramiko.RSAKey.generate(2048)
 SSH_BANNER = "SSH-2.0-OpenSSH_8.4p1 Raspbian-5+deb11u1"
 
-# ---------------------------------------------------------
-#   Connexion DB
-# ---------------------------------------------------------
 def get_db():
     return pymysql.connect(**DB_CONFIG)
 
-# ---------------------------------------------------------
-#   Logging SSH + Géoloc
-# ---------------------------------------------------------
 def log_event(ip, username, password):
     conn = get_db()
     cursor = conn.cursor()
@@ -31,12 +25,12 @@ def log_event(ip, username, password):
         VALUES (%s, %s, %s, %s)
     """, (ts, ip, username, password))
 
-    # Geo DB
+    # Geo DB avec compteur
     geo = get_ip_info(ip) or {}
     cursor.execute("""
         INSERT INTO ip_geolocation
-        (ip,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,asn,last_update)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        (ip,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,asn,last_update,count)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1)
         ON DUPLICATE KEY UPDATE
             country=VALUES(country),
             countryCode=VALUES(countryCode),
@@ -50,7 +44,8 @@ def log_event(ip, username, password):
             isp=VALUES(isp),
             org=VALUES(org),
             asn=VALUES(asn),
-            last_update=VALUES(last_update)
+            last_update=VALUES(last_update),
+            count=count+1
     """, (
         ip,
         geo.get("country"),
@@ -67,12 +62,8 @@ def log_event(ip, username, password):
         geo.get("as"),
         ts
     ))
-
     conn.close()
 
-# ---------------------------------------------------------
-#   PROXY PROTOCOL (HAProxy send-proxy)
-# ---------------------------------------------------------
 def receive_proxy_header(client):
     client.settimeout(2.0)
     header = b""
@@ -93,9 +84,6 @@ def receive_proxy_header(client):
             return parts[2]
     return None
 
-# ---------------------------------------------------------
-#   PARAMIKO SERVER
-# ---------------------------------------------------------
 class HoneyServer(paramiko.ServerInterface):
     def __init__(self, client_ip):
         self.client_ip = client_ip
@@ -113,9 +101,6 @@ class HoneyServer(paramiko.ServerInterface):
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
-# ---------------------------------------------------------
-#   Client handler
-# ---------------------------------------------------------
 def handle_client(client_socket, addr):
     real_ip = receive_proxy_header(client_socket)
     ip = real_ip or addr[0]
@@ -134,7 +119,6 @@ def handle_client(client_socket, addr):
         if chan is None:
             return
 
-        # Simule shell Raspberry Pi
         chan.send("Linux raspberrypi 5.10.0 armv7l\n")
         chan.send("raspberrypi login: ")
         time.sleep(3)
@@ -144,9 +128,6 @@ def handle_client(client_socket, addr):
     finally:
         transport.close()
 
-# ---------------------------------------------------------
-#   Main listener
-# ---------------------------------------------------------
 def start_ssh_honeypot(port=2022):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("0.0.0.0", port))
