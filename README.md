@@ -67,6 +67,7 @@ CREATE TABLE ip_geolocation (
     timezone VARCHAR(50),
     isp VARCHAR(255),
     org VARCHAR(255),
+    count INT DEFAULT 1,
     as VARCHAR(50),
     last_update DOUBLE
 );
