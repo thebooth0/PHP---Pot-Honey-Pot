@@ -109,3 +109,7 @@ python3 generate_dashboard.py
   - Top 100 des IPs et leur localisation
   - Carte du monde avec cercles indiquant les attaques par localisation
 
+
+## Images : 
+![](img/img1)
+![](img/img2)
