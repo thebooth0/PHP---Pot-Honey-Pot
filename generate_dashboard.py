@@ -14,8 +14,8 @@ def main():
     conn = get_db()
     cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-    # Tentatives par heure
-    cursor.execute("SELECT timestamp FROM ssh_logs")
+    # Récupérer toutes les tentatives SSH
+    cursor.execute("SELECT timestamp, ip, username, password FROM ssh_logs")
     rows = cursor.fetchall()
 
     attempts_per_hour = Counter()
@@ -23,7 +23,7 @@ def main():
     usernames = Counter()
     passwords = Counter()
     combos = Counter()
-    ips = {}
+    ip_counts = Counter()
 
     for r in rows:
         ts = r["timestamp"]
@@ -32,33 +32,46 @@ def main():
         day_str = dt.strftime("%Y-%m-%d")
         attempts_per_hour[hour_str] += 1
         attempts_per_day[day_str] += 1
+        if r["username"]:
+            usernames[r["username"]] += 1
+        if r["password"]:
+            passwords[r["password"]] += 1
+        if r["username"] and r["password"]:
+            combos[f"{r['username']}|{r['password']}"] += 1
+        if r["ip"]:
+            ip_counts[r["ip"]] += 1
 
-    cursor.execute("SELECT username FROM ssh_logs")
-    usernames.update([r["username"] for r in cursor.fetchall() if r["username"]])
-    cursor.execute("SELECT password FROM ssh_logs")
-    passwords.update([r["password"] for r in cursor.fetchall() if r["password"]])
-    cursor.execute("SELECT username, password FROM ssh_logs")
-    combos.update([f"{r['username']}|{r['password']}" for r in cursor.fetchall()])
+    # Top 100
+    top_users = usernames.most_common(100)
+    top_passwords = passwords.most_common(100)
+    top_combos = combos.most_common(100)
+    top_ips = [{"ip": ip, "count": count} for ip, count in ip_counts.most_common(100)]
 
+    # Récupération des infos géolocalisation
     cursor.execute("SELECT * FROM ip_geolocation")
-    for r in cursor.fetchall():
-        ips[r["ip"]] = r
-
+    ips_info = {r["ip"]: r for r in cursor.fetchall()}
     conn.close()
+
+    # Préparer les infos IP pour JS
+    ips_info_json = {
+        ip: {
+            "lat": info.get("lat", 0),
+            "lon": info.get("lon", 0),
+            "country": info.get("country",""),
+            "regionName": info.get("regionName",""),
+            "city": info.get("city",""),
+            "isp": info.get("isp","")
+        } for ip, info in ips_info.items()
+    }
 
     # Convert data pour JS
     hours_labels = list(attempts_per_hour.keys())
     hours_values = list(attempts_per_hour.values())
     days_labels = list(attempts_per_day.keys())
     days_values = list(attempts_per_day.values())
-    top_users = usernames.most_common(100)
-    top_passwords = passwords.most_common(100)
-    top_combos = combos.most_common(100)
-    top_ips = sorted(ips.values(), key=lambda x: x.get("id",0), reverse=True)[:100]
 
     # Génération HTML
-    html = f"""
-<!DOCTYPE html>
+    html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -74,39 +87,50 @@ th, td {{ border: 1px solid #999; padding: 5px; text-align: left; font-size: 14p
 canvas {{ background: white; border: 1px solid #ccc; margin-bottom: 40px; }}
 #map {{ height: 500px; width: 100%; margin-bottom: 40px; }}
 .flex-tables {{ display: flex; gap: 20px; flex-wrap: wrap; }}
-.flex-tables table {{ width: 48%; }}
+.flex-tables table {{ width: 32%; }}
+.flex-charts {{ display: flex; gap: 20px; flex-wrap: wrap; }}
+.flex-charts canvas {{ width: 48% !important; height: 300px !important; }}
 </style>
 </head>
 <body>
 <h1>SSH Honeypot Dashboard</h1>
 <p>Généré : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
 
-<h2>Tentatives par heure</h2>
-<canvas id="hourChart" width="800" height="300"></canvas>
+<h2>Carte des IPs</h2>
+<div id="map"></div>
 
-<h2>Tentatives par jour</h2>
-<canvas id="dayChart" width="800" height="300"></canvas>
+<h2>Tentatives par heure et par jour</h2>
+<div class="flex-charts">
+<canvas id="hourChart"></canvas>
+<canvas id="dayChart"></canvas>
+</div>
 
-<h2>Top 100 Usernames & Passwords</h2>
+<h2>Top 100 Usernames & Passwords & Top 100 Combos</h2>
 <div class="flex-tables">
 <table><tr><th>Username</th><th>Count</th></tr>
 {''.join(f"<tr><td>{u}</td><td>{c}</td></tr>" for u,c in top_users)}</table>
 
 <table><tr><th>Password</th><th>Count</th></tr>
 {''.join(f"<tr><td>{u}</td><td>{c}</td></tr>" for u,c in top_passwords)}</table>
-</div>
 
-<h2>Top 100 Combos</h2>
 <table><tr><th>Username</th><th>Password</th><th>Count</th></tr>
 {''.join(f"<tr><td>{c.split('|')[0]}</td><td>{c.split('|')[1]}</td><td>{v}</td></tr>" for c,v in top_combos)}</table>
 
-<h2>Top 100 IPs</h2>
-<table><tr><th>IP</th><th>Country</th><th>Region</th><th>City</th><th>ISP</th></tr>
-{''.join(f"<tr><td>{i['ip']}</td><td>{i.get('country')}</td><td>{i.get('regionName')}</td><td>{i.get('city')}</td><td>{i.get('isp')}</td></tr>" for i in top_ips)}
-</table>
+</div>
 
-<h2>Carte des IPs</h2>
-<div id="map"></div>
+<h2>Top 100 IPs</h2>
+<table>
+<tr><th>IP</th><th>Country</th><th>Region</th><th>City</th><th>ISP</th><th>Count</th></tr>
+{''.join(
+    f"<tr><td>{ip_data['ip']}</td>"
+    f"<td>{(ips_info_json.get(ip_data['ip']) or {}).get('country','')}</td>"
+    f"<td>{(ips_info_json.get(ip_data['ip']) or {}).get('regionName','')}</td>"
+    f"<td>{(ips_info_json.get(ip_data['ip']) or {}).get('city','')}</td>"
+    f"<td>{(ips_info_json.get(ip_data['ip']) or {}).get('isp','')}</td>"
+    f"<td>{ip_data['count']}</td></tr>"
+    for ip_data in top_ips
+)}
+</table>
 
 <script>
 const hourChart = new Chart(document.getElementById('hourChart'), {{
@@ -120,7 +144,17 @@ const hourChart = new Chart(document.getElementById('hourChart'), {{
             fill: false
         }}]
     }},
-    options: {{ responsive: true }}
+    options: {{
+        responsive: true,
+        scales: {{
+            y: {{
+                beginAtZero: true,
+                ticks: {{
+                    stepSize: Math.ceil(Math.max(...{json.dumps(hours_values)})/5)
+                }}
+            }}
+        }}
+    }}
 }});
 
 const dayChart = new Chart(document.getElementById('dayChart'), {{
@@ -134,7 +168,17 @@ const dayChart = new Chart(document.getElementById('dayChart'), {{
             fill: false
         }}]
     }},
-    options: {{ responsive: true }}
+    options: {{
+        responsive: true,
+        scales: {{
+            y: {{
+                beginAtZero: true,
+                ticks: {{
+                    stepSize: Math.ceil(Math.max(...{json.dumps(days_values)})/5)
+                }}
+            }}
+        }}
+    }}
 }});
 
 // Carte Leaflet
@@ -144,12 +188,31 @@ L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
     attribution: '© OpenStreetMap'
 }}).addTo(map);
 
-const ipData = {json.dumps([
-    {"lat": i.get("lat"), "lon": i.get("lon"), "count": 1} 
-    for i in ips.values() if i.get("lat") and i.get("lon")
-])};
+// Export des IP pour JS
+const ips_info = {json.dumps(ips_info_json)};
+const ipData = {json.dumps(top_ips)};
+const aggregated = [];
+const distanceThreshold = 0.5; // environ 0.5 degrés
 
 ipData.forEach(ip => {{
+    let found = false;
+    aggregated.forEach(a => {{
+        if (Math.abs(a.lat - (ips_info[ip.ip]?.lat || 0)) < distanceThreshold &&
+            Math.abs(a.lon - (ips_info[ip.ip]?.lon || 0)) < distanceThreshold) {{
+            a.count += ip.count;
+            found = true;
+        }}
+    }});
+    if (!found) {{
+        aggregated.push({{
+            lat: ips_info[ip.ip]?.lat || 0,
+            lon: ips_info[ip.ip]?.lon || 0,
+            count: ip.count
+        }});
+    }}
+}});
+
+aggregated.forEach(ip => {{
     let radius = Math.min(ip.count * 20000, 80000);
     L.circle([ip.lat, ip.lon], {{
         color: 'red',
@@ -162,8 +225,10 @@ ipData.forEach(ip => {{
 </body>
 </html>
 """
+
     with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
         f.write(html)
+
     print(f"[+] Dashboard généré : {OUTPUT_HTML}")
 
 if __name__ == "__main__":
